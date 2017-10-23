@@ -1,0 +1,490 @@
+1、集群规划：
+	主机名		IP				安装的软件					运行的进程
+	S201	192.168.1.201	jdk、hadoop、zookeeper		NameNode、DataNode、NodeManager、DFSZKFailoverController(zkfc)、JournalNode、kafka、Master
+	S202	192.168.1.202	jdk、hadoop、zookeeper		NameNode、DataNode、NodeManager、DFSZKFailoverController(zkfc)、JournalNode、kafka、HRegionServer、Worker
+	S203	192.168.1.203	jdk、hadoop、zookeeper		ResourceManager、DataNode、NodeManager、JournalNode、kafka、HRegionServer、Worker
+	S204	192.168.1.204	jdk、hadoop					ResourceManager、DataNode、NodeManager、Jobhistory、HMaster
+	
+安装步骤：
+	1.安装配置zooekeeper集群（在S201上）
+		1.1解压
+			tar -zxvf zookeeper-3.4.9.tar.gz -C /service/
+		1.2修改配置
+			cd /service/zookeeper-3.4.9/conf/
+			cp zoo_sample.cfg zoo.cfg
+			vim zoo.cfg
+			修改：dataDir=/service/zookeeper-3.4.9/tmp
+			在最后添加：
+			server.1=S201:2888:3888
+			server.2=S202:2888:3888
+			server.3=S203:2888:3888
+			保存退出
+			然后创建一个tmp文件夹
+			mkdir /service/zookeeper-3.4.9/tmp
+			再创建一个空文件
+			touch /service/zookeeper-3.4.9/tmp/myid
+			最后向该文件写入ID
+			echo 1 > /service/zookeeper-3.4.9/tmp/myid
+		1.3将配置好的zookeeper拷贝到其他节点(首先分别在S202、S203根目录下创建一个service目录：mkdir /service)
+			scp -r /service/zookeeper-3.4.9/ S202:/service/
+			scp -r /service/zookeeper-3.4.9/ S203:/service/
+			
+			注意：修改S202、S203对应/service/zookeeper-3.4.9/tmp/myid内容
+			S202：
+				echo 2 > /service/zookeeper-3.4.9/tmp/myid
+			S203：
+				echo 3 > /service/zookeeper-3.4.9/tmp/myid
+		1.4验证配置
+		cd /service/zookeeper-3.4.9/bin/
+			./zkServer.sh start
+			#查看状态：一个leader，两个follower
+			./zkServer.sh status
+			
+	2.安装配置hadoop集群（在S201上操作）
+		2.1解压
+			tar -zxvf hadoop-2.7.3.tar.gz -C /service/
+		2.2配置HDFS（hadoop2.0所有的配置文件都在$HADOOP_HOME/etc/hadoop目录下）
+			#将hadoop添加到环境变量中
+			vim /etc/profile
+			export JAVA_HOME=/usr/java/jdk1.8.0_101
+			export HADOOP_HOME=/service/hadoop-2.7.3
+			export PATH=$PATH:$JAVA_HOME/bin:$HADOOP_HOME/bin
+			
+			#hadoop2.0的配置文件全部在$HADOOP_HOME/etc/hadoop下
+			cd /service/hadoop-2.7.3/etc/hadoop
+			
+			2.2.1修改hadoo-env.sh
+				export JAVA_HOME=/usr/java/jdk1.8.0_101
+				
+			2.2.2修改core-site.xml
+				<configuration>
+					<!-- 指定hdfs的nameservice为ns1 -->
+					<property>
+						<name>fs.defaultFS</name>
+						<value>hdfs://ns1</value>
+					</property>
+					<!-- 指定hadoop临时目录 -->
+					<property>
+						<name>hadoop.tmp.dir</name>
+						<value>/service/hadoop-2.7.3/tmp</value>
+					</property>
+					<!-- 指定zookeeper地址 -->
+					<property>
+						<name>ha.zookeeper.quorum</name>
+						<value>S201:2181,S202:2181,S203:2181</value>
+					</property>
+				</configuration>
+				
+			2.2.3修改hdfs-site.xml
+				<configuration>
+					<!--指定hdfs的nameservice为ns1，需要和core-site.xml中的保持一致 -->
+					<property>
+						<name>dfs.nameservices</name>
+						<value>ns1</value>
+					</property>
+					<!-- ns1下面有两个NameNode，分别是nn1，nn2 -->
+					<property>
+						<name>dfs.ha.namenodes.ns1</name>
+						<value>nn1,nn2</value>
+					</property>
+					<!-- nn1的RPC通信地址 -->
+					<property>
+						<name>dfs.namenode.rpc-address.ns1.nn1</name>
+						<value>S201:9000</value>
+					</property>
+					<!-- nn1的http通信地址 -->
+					<property>
+						<name>dfs.namenode.http-address.ns1.nn1</name>
+						<value>S201:50070</value>
+					</property>
+					<!-- nn2的RPC通信地址 -->
+					<property>
+						<name>dfs.namenode.rpc-address.ns1.nn2</name>
+						<value>S202:9000</value>
+					</property>
+					<!-- nn2的http通信地址 -->
+					<property>
+						<name>dfs.namenode.http-address.ns1.nn2</name>
+						<value>S202:50070</value>
+					</property>
+					<!-- 指定NameNode的元数据在JournalNode上的存放位置 -->
+					<property>
+						<name>dfs.namenode.shared.edits.dir</name>
+						<value>qjournal://S201:8485;S202:8485;S203:8485/ns1</value>
+					</property>
+					<!-- 指定JournalNode在本地磁盘存放数据的位置 -->
+					<property>
+						<name>dfs.journalnode.edits.dir</name>
+						<value>/service/hadoop-2.7.3/journal</value>
+					</property>
+					<!-- 开启NameNode失败自动切换 -->
+					<property>
+						<name>dfs.ha.automatic-failover.enabled</name>
+						<value>true</value>
+					</property>
+					<!-- 配置失败自动切换实现方式 -->
+					<property>
+						<name>dfs.client.failover.proxy.provider.ns1</name>
+						<value>org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider</value>
+					</property>
+					<!-- 配置隔离机制方法，多个机制用换行分割，即每个机制暂用一行-->
+					<property>
+						<name>dfs.ha.fencing.methods</name>
+						<value>
+							sshfence
+							shell(/bin/true)
+						</value>
+					</property>
+					<!-- 使用sshfence隔离机制时需要ssh免登陆 -->
+					<property>
+						<name>dfs.ha.fencing.ssh.private-key-files</name>
+						<value>/root/.ssh/id_rsa</value>
+					</property>
+					<!-- 配置sshfence隔离机制超时时间 -->
+					<property>
+						<name>dfs.ha.fencing.ssh.connect-timeout</name>
+						<value>30000</value>
+					</property>
+				</configuration>
+			
+			2.2.4修改mapred-site.xml
+				<configuration>
+					<!-- 指定mr框架为yarn方式 -->
+					<property>
+						<name>mapreduce.framework.name</name>
+						<value>yarn</value>
+					</property>
+					<!-- configure historyserver -->
+					<property>
+						<name>mapreduce.jobhistory.address</name>
+						<value>S204:10020</value>
+					</property>
+					<property>
+						<name>mapreduce.jobhistory.webapp.address</name>
+						<value>S204:19888</value>
+					</property>
+					<property>
+						<name>mapred.job.reuse.jvm.num.tasks</name>
+						<value>-1</value>
+					</property>
+					<property>
+						<name>mapreduce.reduce.shuffle.parallelcopies</name>
+						<value>20</value>
+					</property>
+				</configuration>
+			
+			2.2.5修改yarn-site.xml
+				<configuration>
+						<!-- 开启RM高可靠 -->
+						<property>
+						   <name>yarn.resourcemanager.ha.enabled</name>
+						   <value>true</value>
+						</property>
+						<!-- 指定RM的cluster id -->
+						<property>
+						   <name>yarn.resourcemanager.cluster-id</name>
+						   <value>yrc</value>
+						</property>
+						<!-- 指定RM的名字 -->
+						<property>
+						   <name>yarn.resourcemanager.ha.rm-ids</name>
+						   <value>rm1,rm2</value>
+						</property>
+						<!-- 分别指定RM的地址 -->
+						<property>
+						   <name>yarn.resourcemanager.hostname.rm1</name>
+						   <value>S203</value>
+						</property>
+						<property>
+						   <name>yarn.resourcemanager.hostname.rm2</name>
+						   <value>S204</value>
+						</property>
+						<!-- 指定zk集群地址 -->
+						<property>
+						   <name>yarn.resourcemanager.zk-address</name>
+						   <value>S201:2181,S202:2181,S203:2181</value>
+						</property>
+						<property>
+						   <name>yarn.nodemanager.aux-services</name>
+						   <value>mapreduce_shuffle</value>
+						</property>
+				</configuration>
+			
+				
+			2.2.6修改slaves(slaves是指定子节点的位置，因为要在S201上启动HDFS、在S203启动yarn，所以S201上的slaves文件指定的是datanode的位置，S203上的slaves文件指定的是nodemanager的位置)
+				S201
+				S202
+				S203
+				S204
+
+			2.2.7配置免密码登陆
+				#首先要配置S201到S202、S203、S204的免密码登陆
+				#在S201上生产一对钥匙
+				ssh-keygen -t rsa
+				#将公钥拷贝到其他节点，包括自己
+				ssh-coyp-id S201
+				ssh-coyp-id S202
+				ssh-coyp-id S203
+				ssh-coyp-id S204
+				
+				#配置S203到S201、S202、S204的免密码登陆
+				#在S203上生产一对钥匙
+				ssh-keygen -t rsa
+				#将公钥拷贝到其他节点
+				ssh-coyp-id S201
+				ssh-coyp-id S202
+				ssh-coyp-id S203
+				ssh-coyp-id S204
+				#注意：两个namenode之间要配置ssh免密码登陆，别忘了配置S202到S201的免登陆
+				在service02上生产一对钥匙
+				ssh-keygen -t rsa
+				ssh-coyp-id -i service01				
+		
+		2.4将配置好的hadoop拷贝到其他节点
+			scp -r /service/hadoop-2.7.3/ root@S202:/service/
+			scp -r /service/hadoop-2.7.3/ root@S203:/service/
+			scp -r /service/hadoop-2.7.3/ root@S204:/service/
+		###注意：严格按照下面的步骤
+		2.5启动zookeeper集群（分别在S201、S202、S203上启动zk）
+			cd /service/zookeeper-3.4.9/
+			bin/zkServer.sh start
+			#查看状态：一个leader，两个follower
+			bin/zkServer.sh status
+			
+		2.6启动journalnode（分别在在S201、S202、S203上执行）
+			cd /service/hadoop-2.7.3
+			sbin/hadoop-daemon.sh start journalnode
+			#运行jps命令检验，S201、S202、S203上多了JournalNode进程
+		
+		2.7格式化HDFS
+			#在S201上执行命令:
+			hdfs namenode -format
+			#格式化后会在根据core-site.xml中的hadoop.tmp.dir配置生成个文件，这里我配置的是/service/hadoop-2.7.3/tmp，然后将/service/hadoop-2.7.3/tmp拷贝到S202的/service/hadoop-2.7.3/下。
+			scp -r tmp/ S202:/service/hadoop-2.7.3/
+		
+		2.8格式化ZK(在S201上执行即可)
+			hdfs zkfc -formatZK
+		
+		2.9启动HDFS(在S201上执行)
+			sbin/start-dfs.sh
+
+		2.10启动YARN(#####注意#####：是在S203上执行start-yarn.sh，把namenode和resourcemanager分开是因为性能问题，因为他们都要占用大量资源，所以把他们分开了，他们分开了就要分别在不同的机器上启动)
+			sbin/start-yarn.sh
+
+		
+	到此，hadoop-2.7.3配置完毕，可以统计浏览器访问:
+		http://S201:50070
+		NameNode 'S201:9000' (active)
+		http://S202:50070
+		NameNode 'S202:9000' (standby)
+	
+	验证HDFS HA
+		首先向hdfs上传一个文件
+		hadoop fs -put /etc/profile /profile
+		hadoop fs -ls /
+		然后再kill掉active的NameNode
+		kill -9 <pid of NN>
+		通过浏览器访问：http://S202:50070
+		NameNode 'S202:9000' (active)
+		这个时候S202上的NameNode变成了active
+		在执行命令：
+		hadoop fs -ls /
+		-rw-r--r--   3 root supergroup       1926 2014-02-06 15:36 /profile
+		刚才上传的文件依然存在！！！
+		手动启动那个挂掉的NameNode
+		sbin/hadoop-daemon.sh start namenode
+		通过浏览器访问：http://S201:50070
+		NameNode 'S201:9000' (standby)
+		
+		mapreduce:
+		http://s203:8088/cluster
+	
+	验证YARN：
+		运行一下hadoop提供的demo中的WordCount程序：
+		hadoop jar share/hadoop/mapreduce/hadoop-mapreduce-examples-2.7.3.jar wordcount /profile /out
+	
+	OK，大功告成！！！
+	
+
+3、Kafka安装配置：
+3.1、启动zk {start|start-foreground|stop|restart|status|upgrade|print-cmd}
+bin/zkServer.sh restart
+
+3.2、修改kafka配置：config/server.properties
+	broker.id=201
+	zookeeper.connect=S201:2181,S202:2181,S203:2181/kafka
+这里需要说明的是，默认Kafka会使用ZooKeeper默认的/路径，这样有关Kafka的ZooKeeper配置就会散落在根路径下面，如果你有其他的应用也在使用ZooKeeper集群，查看ZooKeeper中数据可能会不直观，所以强烈建议指定一个chroot路径，直接在zookeeper.connect配置项中指定。
+而且，需要手动在ZooKeeper中创建路径/kafka，使用如下命令连接到任意一台ZooKeeper服务器：
+bin/zkCli.sh
+create /kafka ''
+
+这样，每次连接Kafka集群的时候（使用--zookeeper选项），也必须使用带chroot路径的连接字符串，后面会看到。
+然后，将配置好的安装文件同步到其他的S202、S203节点上：
+scp -r /service/kafka_2.11-0.10.0.1  S202:/service/
+scp -r /service/kafka_2.11-0.10.0.1  S203:/service/
+
+并修改配置文件config/server.properties内容如下所示：
+broker.id=202
+broker.id=203
+
+因为Kafka集群需要保证各个Broker的id在整个集群中必须唯一，需要调整这个配置项的值（如果在单机上，可以通过建立多个Broker进程来模拟分布式的Kafka集群，也需要Broker的id唯一，还需要修改一些配置目录的信息）。
+
+3.3、启动：
+在集群中的S201、S202、S203这三个节点上分别启动Kafka，分别执行如下命令：
+bin/kafka-server-start.sh /service/kafka_2.11-0.10.0.1/config/server.properties &
+
+3.4、检查是否正常：
+可以通过查看日志，或者检查进程状态，保证Kafka集群启动成功。
+我们创建一个名称为my-replicated-topic5的Topic，5个分区，并且复制因子为3，执行如下命令：
+bin/kafka-topics.sh --create --zookeeper S201:2181,S202:2181,S203:2181/kafka --replication-factor 3 --partitions 5 --topic my-replicated-topic5
+
+查看创建的Topic，执行如下命令：
+bin/kafka-topics.sh --describe --zookeeper S201:2181,S202:2181,S203:2181/kafka --topic my-replicated-topic5
+
+结果信息如下所示：
+[root@S201 kafka_2.11-0.10.0.1]# bin/kafka-topics.sh --describe --zookeeper S201:2181,S202:2181,S203:2181/kafka --topic my-replicated-topic5
+Topic:my-replicated-topic5	PartitionCount:5	ReplicationFactor:3	Configs:
+	Topic: my-replicated-topic5	Partition: 0	Leader: 202	Replicas: 202,203,201	Isr: 202,203,201
+	Topic: my-replicated-topic5	Partition: 1	Leader: 203	Replicas: 203,201,202	Isr: 203,201,202
+	Topic: my-replicated-topic5	Partition: 2	Leader: 201	Replicas: 201,202,203	Isr: 201,202,203
+	Topic: my-replicated-topic5	Partition: 3	Leader: 202	Replicas: 202,201,203	Isr: 202,201,203
+	Topic: my-replicated-topic5	Partition: 4	Leader: 203	Replicas: 203,202,201	Isr: 203,202,201
+	
+
+上面Leader、Replicas、Isr的含义如下：
+Partition： 分区
+Leader   ： 负责读写指定分区的节点
+Replicas ： 复制该分区log的节点列表
+Isr      ： "in-sync" replicas，当前活跃的副本列表（是一个子集），并且可能成为Leader
+
+
+我们可以通过Kafka自带的bin/kafka-console-producer.sh和bin/kafka-console-consumer.sh脚本，来验证演示如果发布消息、消费消息。
+在一个终端，启动Producer，并向我们上面创建的名称为my-replicated-topic5的Topic中生产消息，执行如下脚本：
+bin/kafka-console-producer.sh --broker-list S201:9092,S202:9092,S203:9092 --topic my-replicated-topic5
+
+在另一个终端，启动Consumer，并订阅我们上面创建的名称为my-replicated-topic5的Topic中生产的消息，执行如下脚本：
+bin/kafka-console-consumer.sh --zookeeper S201:2181,S202:2181,S203:2181/kafka --from-beginning --topic my-replicated-topic5
+
+可以在Producer终端上输入字符串消息行，然后回车，就可以在Consumer终端上看到消费者消费的消息内容。
+也可以参考Kafka的Producer和Consumer的Java API，通过API编码的方式来实现消息生产和消费的处理逻辑。
+
+4、Storm安装配置：
+Storm集群也依赖Zookeeper集群，要保证Zookeeper集群正常运行。Storm的安装配置比较简单，我们仍然使用上面面3台机器搭建
+
+4.1、配置文件conf/storm.yaml，内容如下所示：
+注意配置时，参数前需要留一个空格
+########### These MUST be filled in for a storm configuration
+ storm.zookeeper.servers:
+     - "S201"
+     - "S202"
+     - "S203"
+# 
+ nimbus.seeds: ["S201"]
+# 
+ storm.local.dir: "/data/storm"
+#
+ supervisor.slots.ports:
+    - 6700
+    - 6701
+    - 6702
+    - 6703
+storm.local.dir: "/data/storm"
+
+将配置好的安装文件，分发到其他节点上：
+scp -r /service/storm-1.0.2  S202:/service/
+scp -r /service/storm-1.0.2  S203:/service/
+
+4.2、启动
+启动主控节点：
+bin/storm nimbus &
+启动工作节点
+bin/storm supervisor &
+启动管理页面：在主控节点上运行
+bin/storm ui &
+
+4.3、检查是否正常：
+这样可以通过访问http://S201:8080/来查看Topology的运行状况。
+
+4.4、开发业务
+/service/storm-jar/storm-0.0.1.jar
+添加到storm环境
+
+bin/storm jar /service/storm-jar/storm-0.0.1.jar com.efun.storm.hello.topology.HelloTopo hello
+
+4.5、kafka和storm整合遇到的异常：
+错误：java.lang.NoClassDefFoundError: org/apache/kafka/common/network/Send
+cp  /service/kafka_2.11-0.10.0.1/libs/scala-library-2.11.8.jar  /service/storm-1.0.2/lib/
+cp  /service/kafka_2.11-0.10.0.1/libs/metrics-core-2.2.0.jar  /service/storm-1.0.2/lib/
+cp  /service/kafka_2.11-0.10.0.1/libs/zkclient-0.8.jar  /service/storm-1.0.2/lib/
+cp  /service/kafka_2.11-0.10.0.1/libs/log4j-1.2.17.jar  /service/storm-1.0.2/lib/
+cp  /service/kafka_2.11-0.10.0.1/libs/slf4j-api-1.7.21.jar  /service/storm-1.0.2/lib/
+cp  /service/kafka_2.11-0.10.0.1/libs/jopt-simple-4.9.jar  /service/storm-1.0.2/lib/
+
+storm-kafka-1.0.2.jar
+kafka_2.11-0.8.2.1.jar
+kafka-clients-0.8.2.1.jar
+guava-16.0.1.jar 
+
+错误：java.lang.NoClassDefFoundError: org/apache/curator/RetryPolicy
+curator-client-2.10.0.jar
+curator-framework-2.10.0.jar
+错误：java.lang.NoClassDefFoundError: org/apache/zookeeper/KeeperException$ConnectionLossException
+zookeeper-3.4.6.jar
+错误：java.lang.NoClassDefFoundError: org/json/simple/JSONValue
+json-simple-1.1.jar
+错误：java.lang.NoClassDefFoundError: org/apache/commons/lang/StringUtils
+commons-lang-2.5.jar
+
+
+4.6、hdfs和storm整合
+错误：Exception in thread "main" java.lang.NoClassDefFoundError: org/apache/storm/hdfs/bolt/format/FileNameFormat
+storm-hdfs-1.0.2.jar
+错误：Caused by: java.lang.ClassNotFoundException: org.apache.hadoop.hdfs.client.HdfsDataOutputStream$SyncFlag
+hadoop-hdfs-2.7.3.jar
+错误：Caused by: java.lang.ClassNotFoundException: org.apache.hadoop.fs.Path
+hadoop-common-2.7.3.jar
+错误：java.lang.NoClassDefFoundError: org/apache/commons/logging/LogFactory
+commons-logging-1.1.3.jar
+错误：java.lang.NoClassDefFoundError: org/apache/commons/collections/map/UnmodifiableMap
+commons-collections-3.2.2.jar
+错误：java.lang.NoClassDefFoundError: org/apache/commons/configuration/Configuration
+commons-configuration-1.10.jar
+错误：Caused by: java.lang.NoClassDefFoundError: org.apache.hadoop.hdfs.web.WebHdfsFileSystem
+hadoop-hdfs-2.7.3.jar
+错误：java.lang.NoClassDefFoundError: org/apache/htrace/SamplerBuilder
+htrace-core-3.1.0-incubating.jar
+错误：java.lang.NoClassDefFoundError: org/apache/commons/cli/ParseException
+commons-cli-1.2.jar
+错误：Caused by: java.lang.NoClassDefFoundError: org/codehaus/jackson/map/ObjectMapper
+jackson-mapper-asl-1.9.13.jar
+错误：Caused by: java.lang.ClassNotFoundException: org/codehaus/jackson/Versioned
+jackson-core-asl-1.9.13.jar
+错误：java.lang.NoClassDefFoundError: com/google/protobuf/ServiceException
+protobuf-java-2.5.0.jar
+错误：java.lang.NoClassDefFoundError: org/apache/commons/io/Charsets
+commons-io-2.5.jar
+
+storm-jdbc:
+错误：Caused by: java.lang.ClassNotFoundException: org.apache.storm.jdbc.common.ConnectionProvider
+storm-jdbc-1.0.2.jar
+mysql-connector-java-5.1.31.jar
+错误：Caused by: java.lang.ClassNotFoundException: com.zaxxer.hikari.HikariConfig
+HikariCP-2.4.3.jar
+错误：java.lang.NoClassDefFoundError: org/apache/commons/lang3/StringUtils
+commons-lang3-3.4.jar
+
+storm-hive：
+storm-hive-1.0.2.jar
+
+storm-elasticsearch：
+storm-elasticsearch-1.0.2.jar
+错误：Caused by: java.lang.ClassNotFoundException: org.elasticsearch.common.base.Preconditions
+elasticsearch-1.6.0.jar
+错误：Caused by: java.lang.ClassNotFoundException: org.apache.lucene.util.Version
+lucene-core-4.10.4.jar
+
+另外需要根据业务编写HelloEsTupleMapper implements EsTupleMapper
+storm-redis：
+storm-redis-1.0.2.jar
+
+
