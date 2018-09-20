@@ -100,7 +100,7 @@ BigData-搭建详细说明
 #####配置：[官方配置说明](https://hadoop.apache.org/docs/stable/hadoop-project-dist/hadoop-common/SingleCluster.html 'title') , [博客配置说明](http://www.powerxing.com/install-hadoop/ 'title')
 
 1.[Configuration进行配置](https://hadoop.apache.org/docs/stable/hadoop-project-dist/hadoop-common/SingleCluster.html#Configuration)
-	<value>hdfs://localhost:9000</value> 为hdfs的访问路径(spark可进行访问)
+	默认为<value>hdfs://localhost:9000</value>或者可能<value>hdfs://localhost:50070</value> 为hdfs的访问路径(spark可进行访问)
 
 2.[Setup passphraseless ssh](https://hadoop.apache.org/docs/stable/hadoop-project-dist/hadoop-common/SingleCluster.html#Setup_passphraseless_ssh 'title')
 	【mac 不需根据链接进行】只需在"系统偏好设置"里面开启"远程登录"，如果不开启会出现错误:ssh: connect to host 0.0.0.0 port 22: Connection refused
